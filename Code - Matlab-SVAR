@@ -1,0 +1,274 @@
+% ========================================================================
+%                     SVAR(3) con Bootstrap IRFs 10000 rep
+%                     Incluye FEVD
+%                     Por: Brayan Aderson Perez Vargas
+% ========================================================================
+clear; close all; clc;
+
+%% ============================================================
+% 1) DATOS
+%% ============================================================
+TBL = readtable('fin.xlsx','Sheet','Hoja1','Range','A1:C193');
+stime = datetime(2004,1,1);
+tstep = calmonths(1);
+T0 = height(TBL);
+
+Fecha = stime + tstep*(0:T0-1)';
+Data  = table2timetable(TBL,'RowTimes',Fecha);
+Data.Properties.VariableNames = ["WTI","CRECI","INFLA"];
+
+y      = Data{:,:};
+dates  = Data.Time;
+titles = Data.Properties.VariableNames;
+
+[T0,N] = size(y);
+
+%% ============================================================
+% 2) MATRIZ VAR(3)
+%% ============================================================
+L = 3;
+Y = y(L+1:end,:);
+X = ones(T0-L,1);
+
+for l = 1:L
+    X = [X y(L+1-l:end-l,:)];
+end
+
+T = size(Y,1);
+
+%% ============================================================
+% 3) ESTIMACIÓN VAR(3)
+%% ============================================================
+B_OLS = (X'*X)\(X'*Y);
+E     = Y - X*B_OLS;
+Sigma = (E'*E)/(T-size(X,2));
+
+c    = B_OLS(1,:)';
+Phi1 = B_OLS(2:1+N,:)';
+Phi2 = B_OLS(2+N:1+2*N,:)';
+Phi3 = B_OLS(2+2*N:1+3*N,:)' ;
+
+%% ============================================================
+% 4) COMPANION MATRIX
+%% ============================================================
+Acomp = [Phi1 Phi2 Phi3;
+         eye(2*N) zeros(2*N,N)];
+
+J = [eye(N) zeros(N,2*N)];
+
+%% ============================================================
+% 5) SVAR CHOLESKY (WTI->CRECI->INFLA)
+%% ============================================================
+S = chol(Sigma,'lower');
+
+%% ============================================================
+% 6) IRFs CON BOOTSTRAP
+%% ============================================================
+nhor  = 36;     
+nboot = 10000;  
+IRF   = zeros(nhor,N,N);      
+IRFboot = zeros(nhor,N,N,nboot);
+
+shock = eye(N); 
+
+% IRFs puntuales
+for s = 1:N
+    for h = 1:nhor
+        IRF(h,:,s) = (J*Acomp^(h-1)*J'*S*shock(:,s))';
+    end
+end
+
+rng(123);
+
+for b = 1:nboot
+    idx = randi(T,T,1);
+    E_b = E(idx,:);
+    
+    yb = zeros(T+L,N);
+    yb(1:L,:) = Y(1:L,:);
+    
+    for t = L+1:T+L
+        yb(t,:) = (c + Phi1*yb(t-1,:)' + Phi2*yb(t-2,:)' + Phi3*yb(t-3,:)' + E_b(t-L,:)')';
+    end
+    
+    Yb = yb(L+1:end,:);
+    Xb = ones(T,1);
+    for l = 1:L
+        Xb = [Xb yb(L+1-l:end-l,:)];
+    end
+    
+    Bb = (Xb'*Xb)\(Xb'*Yb);
+    Phib1 = Bb(2:1+N,:)';
+    Phib2 = Bb(2+N:1+2*N,:)';
+    Phib3 = Bb(2+2*N:1+3*N,:)';
+    Eb    = Yb - Xb*Bb;
+    Sigb  = cov(Eb);
+    Sb    = chol(Sigb,'lower');
+    
+    Ab = [Phib1 Phib2 Phib3;
+          eye(2*N) zeros(2*N,N)];
+    
+    for s = 1:N
+        for h = 1:nhor
+            IRFboot(h,:,s,b) = (J*Ab^(h-1)*J'*Sb*shock(:,s))';
+        end
+    end
+end
+
+LowerIRF = prctile(IRFboot,2.5,4);
+UpperIRF = prctile(IRFboot,97.5,4);
+
+%% ============================================================
+% 7) GRAFICOS IRFs - Elegante, Fondo Blanco
+%% ============================================================
+%% ============================================================
+% 7) GRAFICOS IRFs - Fondo blanco, cuadro único, sin grillas
+%% ============================================================
+lineColor = [0.8 0 0];       % rojo académico
+shadeColor = [0.7 0.7 0.8];  % gris azulado para bandas
+alphaShade = 0.25;           % transparencia de IC
+
+for s = 1:N
+    figure('Name',['IRF Shock: ',titles{s}],'Color','w','Position',[100 100 700 600]);
+    t = tiledlayout(N,1,'TileSpacing','compact','Padding','compact');
+
+    for r = 1:N
+        nexttile; hold on
+        
+        % Banda de confianza
+        fill([1:nhor fliplr(1:nhor)], ...
+             [UpperIRF(:,r,s)' fliplr(LowerIRF(:,r,s)')], ...
+             shadeColor, 'FaceAlpha',alphaShade, 'EdgeColor','none');
+        
+        % Línea IRF
+        plot(1:nhor, IRF(:,r,s), 'Color', lineColor, 'LineWidth', 1.8)
+        
+        % Línea cero
+        yline(0,'--','Color',[0.4 0.4 0.4],'LineWidth',1.2)
+        
+        % Títulos y etiquetas
+        title([titles{s}, ' → ', titles{r}], 'FontWeight','bold','FontSize',12)
+        xlabel('Meses','FontSize',11)
+        ylabel('Respuesta','FontSize',11)
+        
+        if r==1
+            legend('IC 95%','IRF','Location','best')
+        end
+        
+        % Fondo blanco y sin grilla ni borde
+        set(gca,'Color','w','XColor','k','YColor','k') % ejes negros
+        box on     % mantener un marco único para todo
+        grid off   % quitar cuadriculas
+    end
+end
+
+
+%% ============================================================
+% 8) MEDIA INCONDICIONAL SVAR(3)
+%% ============================================================
+mu = (eye(N)-Phi1-Phi2-Phi3)\c;
+disp('Media incondicional del SVAR(3):')
+disp(array2table(mu','VariableNames',titles))
+
+%% ============================================================
+% 9) FEVD - Elegante, Fondo Blanco (Gráfico de Líneas)
+%% ============================================================
+%% ============================================================
+% 9) FEVD - Elegante, Fondo Blanco (Gráfico de Líneas)
+%% ============================================================
+Hfevd = 24; % horizonte FEVD
+FEVD = zeros(Hfevd,N,N);
+
+for h = 1:Hfevd
+    for i = 1:N
+        for j = 1:N
+            Sigma_h = zeros(N);
+            for k = 0:h-1
+                Sigma_h = Sigma_h + (J*Acomp^k*J'*S*S'*J*Acomp^k*J') ;
+            end
+            FEVD(h,i,j) = Sigma_h(i,j)^2 / sum(diag(Sigma_h)); 
+        end
+    end
+end
+
+for i = 1:N
+    figure('Name',['FEVD: ',titles{i}],'Color','w','Position',[150 150 700 500]);
+    hold on
+    
+    % Dibujar líneas para cada shock
+    for j = 1:N
+        plot(1:Hfevd, squeeze(FEVD(:,i,j)), 'LineWidth', 2)  % Línea para cada shock
+    end
+    
+    % Leyenda
+    legend(titles,'Location','northeast','FontSize',10)
+    
+    % Etiquetas
+    xlabel('Meses','FontSize',11)
+    ylabel('Contribución relativa','FontSize',11)
+    title(['FEVD - ',titles{i}],'FontWeight','bold','FontSize',12)
+    
+    % Fondo blanco, sin grillas ni bordes
+    set(gca,'Color','w','XColor','k','YColor','k')  % ejes negros
+    box on      % Marco alrededor de la gráfica
+    grid off    % Quitar cuadrículas
+end
+
+%% ============================================================
+% 10) FEVD en tablas para interpretación
+%% ============================================================
+FEVD_all = cell(N,1);
+
+for i = 1:N
+    FEVD_all{i} = array2table(squeeze(FEVD(:,i,:)), 'VariableNames', titles);
+    disp(['FEVD completa - ', titles{i}])
+    disp(FEVD_all{i})
+end
+
+%% ============================================================
+% 7b) IRFs todos en un solo gráfico por choque
+%% ============================================================
+lineColor = [0.8 0 0];       % rojo académico
+shadeColor = [0.7 0.7 0.8];  % gris azulado para bandas
+alphaShade = 0.25;           % transparencia de IC
+
+for s = 1:N
+    figure('Name',['IRF Todos: ',titles{s}],'Color','w','Position',[100 100 900 600]);
+    t = tiledlayout(1,N,'TileSpacing','compact','Padding','compact'); % subplots en una fila
+
+    for r = 1:N
+        nexttile; hold on
+        
+        % Banda de confianza
+        fill([1:nhor fliplr(1:nhor)], ...
+             [UpperIRF(:,r,s)' fliplr(LowerIRF(:,r,s)')], ...
+             shadeColor, 'FaceAlpha',alphaShade, 'EdgeColor','none');
+        
+        % Línea IRF
+        plot(1:nhor, IRF(:,r,s), 'Color', lineColor, 'LineWidth', 1.8)
+        
+        % Línea cero
+        yline(0,'--','Color',[0.4 0.4 0.4],'LineWidth',1.2)
+        
+        % Títulos y etiquetas
+        title([titles{s}, ' → ', titles{r}], 'FontWeight','bold','FontSize',12)
+        xlabel('Meses','FontSize',11)
+        ylabel('Respuesta','FontSize',11)
+        
+        % Fondo blanco y sin grilla ni borde
+        set(gca,'Color','w','XColor','k','YColor','k') % ejes negros
+        box on     % mantener un marco único
+        grid off   % quitar cuadriculas
+        
+        if r==1
+            legend('IC 95%','IRF','Location','best')
+        end
+    end
+end
+
+\end{lstlisting}
+
+El Código \ref{lst:svar_completo} muestra la implementación completa del modelo
+SVAR(3), incluyendo la identificación estructural mediante descomposición de
+Cholesky, el cálculo de funciones impulso–respuesta con intervalos de confianza
+bootstrap y la descomposición de varianza del error de pronóstico (FEVD).
