@@ -1,0 +1,115 @@
+*===============================================================
+* MODELO SVAR EN NIVELES – STATA
+* VARIABLES: WTI – CRECI – INFLA (en primera diferencia)
+* FRECUENCIA: MENSUAL
+* PERIODO: 2004m1 – 2019m12
+*===============================================================
+
+clear all
+set more off
+
+*===============================================================
+* 1. DECLARAR ESTRUCTURA DE SERIE DE TIEMPO
+*===============================================================
+gen tm = ym(2004,1) + _n - 1
+format tm %tm
+tsset tm, monthly
+
+tsreport
+
+*===============================================================
+* 2. ANÁLISIS EXPLORATORIO DE DATOS
+*===============================================================
+summarize WTI CRECI INFLA
+
+tsline WTI, title("WTI (Δ)") graphregion(color(white)) plotregion(color(white))
+tsline CRECI, title("Crecimiento económico (Δ)") graphregion(color(white)) plotregion(color(white))
+tsline INFLA, title("Inflación (Δ)") graphregion(color(white)) plotregion(color(white))
+
+*===============================================================
+* 3. PRUEBAS DE ESTACIONARIEDAD
+*===============================================================
+global vars WTI CRECI INFLA
+
+foreach x of global vars {
+    dfuller `x', lags(12)
+    pperron `x'
+    dfgls `x', maxlag(12)
+}
+
+ssc install kpss, replace
+foreach x of global vars {
+    kpss `x', maxlag(12)
+}
+
+*===============================================================
+* 4. SELECCIÓN DE REZAGOS DEL VAR
+*===============================================================
+varsoc WTI CRECI INFLA, maxlag(30)
+local p = 3   // VAR(3) según criterio
+
+*===============================================================
+* 5. ESTIMACIÓN DEL VAR(3)
+*===============================================================
+var WTI CRECI INFLA, lags(1/3)
+
+*===============================================================
+* 6. DIAGNÓSTICOS DEL VAR
+*===============================================================
+varstable
+varlmar
+varnorm
+
+*===============================================================
+* 7. IRF DEL VAR CON BOOTSTRAP
+*===============================================================
+irf set irf_var3, replace
+irf create modelo_var3, step(24) bs reps(1000)
+
+irf graph oirf, impulse(WTI) response(CRECI INFLA) ///
+    title("IRF: Choque WTI → CRECI & INFLA")
+
+irf graph oirf, impulse(CRECI) response(INFLA) ///
+    title("IRF: Choque CRECI → INFLA")
+
+irf graph oirf, impulse(INFLA) response(WTI CRECI) ///
+    title("IRF: Choque INFLA")
+
+*===============================================================
+* 8. IDENTIFICACIÓN ESTRUCTURAL (SVAR)
+*===============================================================
+matrix A = ( ///
+    1, 0, 0 \ ///
+    ., 1, 0 \ ///
+    ., ., 1 )
+
+svar WTI CRECI INFLA, lags(1/3) aeq(A)
+
+irf set svar_irf, replace
+irf create modelo_svar, step(24) bs reps(1000)
+
+irf graph irf, impulse(WTI) response(CRECI INFLA)
+irf graph fevd, response(WTI CRECI INFLA)
+
+*===============================================================
+* 9. IRF DEL SVAR
+*===============================================================
+irf graph irf, impulse(WTI) response(CRECI INFLA) ///
+    title("IRF: Choque estructural en WTI")
+
+irf graph irf, impulse(CRECI) response(INFLA) ///
+    title("IRF: Choque estructural en CRECI")
+
+irf graph irf, impulse(INFLA) response(WTI CRECI) ///
+    title("IRF: Choque estructural en INFLA")
+
+*===============================================================
+* 10. DESCOMPOSICIÓN DE VARIANZA (FEVD)
+*===============================================================
+irf graph fevd, response(WTI CRECI INFLA) ///
+    title("Descomposición de varianza del error de pronóstico")
+\end{lstlisting}
+El Código \ref{lst:svar_stata} presenta la implementación del modelo SVAR en STATA,
+incluyendo pruebas de estacionariedad, selección de rezagos, identificación
+estructural mediante restricciones contemporáneas y el análisis de funciones
+impulso–respuesta y descomposición de varianza.
