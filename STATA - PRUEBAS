@@ -1,115 +1,154 @@
+
 *===============================================================
-* MODELO SVAR EN NIVELES – STATA
-* VARIABLES: WTI – CRECI – INFLA (en primera diferencia)
-* FRECUENCIA: MENSUAL
-* PERIODO: 2004m1 – 2019m12
+* SVAR-X ESTRUCTURAL – ECONOMÍA PEQUEÑA Y ABIERTA
+* PERÚ: SHOCKS PETROLEROS INTERNACIONALES (WTI)
 *===============================================================
 
 clear all
 set more off
 
 *===============================================================
-* 1. DECLARAR ESTRUCTURA DE SERIE DE TIEMPO
+* 1. ESTRUCTURA DE SERIE DE TIEMPO
 *===============================================================
 gen tm = ym(2004,1) + _n - 1
 format tm %tm
 tsset tm, monthly
-
 tsreport
 
 *===============================================================
-* 2. ANÁLISIS EXPLORATORIO DE DATOS
+* 2. VARIABLES
 *===============================================================
-summarize WTI CRECI INFLA
-
-tsline WTI, title("WTI (Δ)") graphregion(color(white)) plotregion(color(white))
-tsline CRECI, title("Crecimiento económico (Δ)") graphregion(color(white)) plotregion(color(white))
-tsline INFLA, title("Inflación (Δ)") graphregion(color(white)) plotregion(color(white))
+summarize WTI INF TPCM CRE
 
 *===============================================================
-* 3. PRUEBAS DE ESTACIONARIEDAD
+* 3. DUMMIES ESTRUCTURALES
 *===============================================================
-global vars WTI CRECI INFLA
 
-foreach x of global vars {
+* Crisis financiera global
+gen d_gfc = inrange(tm, ym(2008,9), ym(2009,6))
+
+* Normalización FED
+gen d_fed = (year(dofm(tm)) == 2018)
+
+*===============================================================
+* 4. ESTACIONARIEDAD
+*===============================================================
+global endo INF TPCM CRE
+
+foreach x of global endo {
     dfuller `x', lags(12)
     pperron `x'
     dfgls `x', maxlag(12)
 }
 
-ssc install kpss, replace
-foreach x of global vars {
-    kpss `x', maxlag(12)
-}
+dfuller WTI, lags(12)
 
 *===============================================================
-* 4. SELECCIÓN DE REZAGOS DEL VAR
+* 5. SELECCIÓN DE REZAGOS
 *===============================================================
-varsoc WTI CRECI INFLA, maxlag(30)
-local p = 3   // VAR(3) según criterio
+varsoc INF TPCM CRE, maxlag(12)
+
 
 *===============================================================
-* 5. ESTIMACIÓN DEL VAR(3)
+* 6. VAR REDUCIDO (VAR-X)
 *===============================================================
-var WTI CRECI INFLA, lags(1/3)
+	
+	var INF TPCM CRE, ///
+    lags(1 2 3 12) ///
+    exog(WTI d_gfc d_fed)
 
 *===============================================================
-* 6. DIAGNÓSTICOS DEL VAR
+* 7. DIAGNÓSTICOS
 *===============================================================
 varstable
 varlmar
 varnorm
 
 *===============================================================
-* 7. IRF DEL VAR CON BOOTSTRAP
+* 8. IDENTIFICACIÓN SVAR-X
+* Orden estructural: INF → TPCM → CRE
 *===============================================================
-irf set irf_var3, replace
-irf create modelo_var3, step(24) bs reps(1000)
 
-irf graph oirf, impulse(WTI) response(CRECI INFLA) ///
-    title("IRF: Choque WTI → CRECI & INFLA")
-
-irf graph oirf, impulse(CRECI) response(INFLA) ///
-    title("IRF: Choque CRECI → INFLA")
-
-irf graph oirf, impulse(INFLA) response(WTI CRECI) ///
-    title("IRF: Choque INFLA")
-
-*===============================================================
-* 8. IDENTIFICACIÓN ESTRUCTURAL (SVAR)
-*===============================================================
 matrix A = ( ///
     1, 0, 0 \ ///
     ., 1, 0 \ ///
     ., ., 1 )
 
-svar WTI CRECI INFLA, lags(1/3) aeq(A)
+matrix B = ( ///
+    ., 0, 0 \ ///
+    0, ., 0 \ ///
+    0, 0, . )
 
-irf set svar_irf, replace
-irf create modelo_svar, step(24) bs reps(1000)
-
-irf graph irf, impulse(WTI) response(CRECI INFLA)
-irf graph fevd, response(WTI CRECI INFLA)
-
-*===============================================================
-* 9. IRF DEL SVAR
-*===============================================================
-irf graph irf, impulse(WTI) response(CRECI INFLA) ///
-    title("IRF: Choque estructural en WTI")
-
-irf graph irf, impulse(CRECI) response(INFLA) ///
-    title("IRF: Choque estructural en CRECI")
-
-irf graph irf, impulse(INFLA) response(WTI CRECI) ///
-    title("IRF: Choque estructural en INFLA")
+svar INF TPCM CRE, ///
+    lags(3) ///
+    exog(WTI d_gfc d_fed) ///
+    aeq(A) ///
+    beq(B)
 
 *===============================================================
-* 10. DESCOMPOSICIÓN DE VARIANZA (FEVD)
+* 9. IRFs ESTRUCTURALES
 *===============================================================
-irf graph fevd, response(WTI CRECI INFLA) ///
-    title("Descomposición de varianza del error de pronóstico")
-\end{lstlisting}
-El Código \ref{lst:svar_stata} presenta la implementación del modelo SVAR en STATA,
-incluyendo pruebas de estacionariedad, selección de rezagos, identificación
-estructural mediante restricciones contemporáneas y el análisis de funciones
-impulso–respuesta y descomposición de varianza.
+irf set svarx_irf, replace
+irf create modelo_svarx, step(24)
+
+irf graph irf, ///
+    impulse(INF TPCM CRE) ///
+    response(INF TPCM CRE) ///
+    yscale(range(-0.5 0.5)) ///
+    title("IRFs estructurales – SVAR-X Perú")
+
+*===============================================================
+* 10. FEVD
+*===============================================================
+irf graph fevd, ///
+    response(INF TPCM CRE) ///
+    title("Descomposición de varianza – SVAR-X Perú")
+
+*===============================================================
+* 11. TABLAS NUMÉRICAS IRF
+*===============================================================
+irf table irf, ///
+    impulse(INF TPCM CRE) ///
+    response(INF TPCM CRE) ///
+    saving(irf_vals, replace)
+
+*===============================================================
+* 12. TABLAS NUMÉRICAS FEVD
+*===============================================================
+irf table fevd, ///
+    response(INF TPCM CRE) ///
+    saving(fevd_vals, replace)
+
+*===============================================================
+* 13. TABLAS RESUMEN (12 y 24 MESES)
+*===============================================================
+
+use irf_vals, clear
+keep if step==12 | step==24
+sort response impulse step
+save irf_resumen_12_24, replace
+
+use fevd_vals, clear
+keep if step==12 | step==24
+sort response impulse step
+save fevd_resumen_12_24, replace
+
+*===============================================================
+* 14. MOSTRAR TABLAS
+*===============================================================
+
+use irf_resumen_12_24, clear
+list response impulse step irf lower upper, sepby(response)
+
+use fevd_resumen_12_24, clear
+list response impulse step fevd, sepby(response)
+
+*===============================================================
+* FIN DEL DO-FILE
+*===============================================================
+
+
+
+
+
+
